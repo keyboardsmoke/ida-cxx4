@@ -256,6 +256,15 @@ def format_unwind_data():
             print("HandlerName at {:X} {:X} = {}".format(handlerRvaEa, handlerRva, handlerName))
             format_cxx4_data()
 
+def is_valid_unwind(beginAddress, endAddress, unwindAddress):
+    if beginAddress == 0 and endAddress == 0 and unwindAddress == 0:
+        return False
+
+    if beginAddress == 0xffffffff and endAddress == 0xffffffff and unwindAddress == 0xffffffff:
+        return False
+
+    return True
+
 def format_runtime_fn():
     global currentEa
     # print("RUNTIME_FN = {:X}".format(currentEa))
@@ -263,7 +272,7 @@ def format_runtime_fn():
     endAddress = read_dword()
     unwindAddress = read_dword()
     resumeEa = currentEa
-    if beginAddress != 0 and beginAddress != 0xffffffff and endAddress != 0 and endAddress != 0xffffffff and unwindAddress != 0 and unwindAddress != 0xffffffff:
+    if is_valid_unwind(beginAddress, endAddress, unwindAddress) == True:
         currentEa = IMAGEBASE + unwindAddress
         format_unwind_data()
 
