@@ -14,6 +14,12 @@ UNW_FLAG_CHAININFO = 4
 UNW_FLAG_NO_EPILOGUE = 0x80000000 # Software only flag
 UNWIND_CHAIN_LIMIT = 32
 
+#
+CXX4Unwind_NoUW = 0b00
+CXX4Unwind_DtorWithObj = 0b01
+CXX4Unwind_DtorWithPtrToObj = 0b10
+CXX4Unwind_RVA = 0b11
+
 # From MS CRT
 negLengthTab = [
     -1, # 0
@@ -78,21 +84,22 @@ def get_bit_num(num, pos, size):
     num &= ((1 << size) - 1)
     return num
 
-def read_cxx4():
+def read_cxx4(name = None):
     global currentEa
-    print("startPos = {:X}".format(currentEa))
     lengthByte = get_original_byte(currentEa)
     lengthBits = lengthByte & 0x0f
     negLength = negLengthTab[lengthBits]
     shift = shiftTab[lengthBits]
-    print("lengthByte = {:X}, lengthBits = {:X}, negLength = {:X}, shift = {:X}".format(lengthByte, lengthBits, negLength, shift))
     readPos = (currentEa - negLength) - 4
-    print("readPos = {:X}".format(readPos))
     result = get_wide_dword(readPos)
-    print("result = {:X}".format(result))
     result >>= shift
     length = ((~(negLength)) + 1)
-    print("length = {:X}".format(length))
+    del_items(currentEa, length, DELIT_SIMPLE)
+    create_byte(currentEa)
+    make_array(currentEa, length)
+    if name != None:
+        set_cmt(currentEa, "{} = {:X}".format(name, result), False)
+        print("{:X} {} = {:X}".format(currentEa, name, result))
     currentEa += length
     return result
 
@@ -101,7 +108,7 @@ def ForceWord(ea):
         if not is_word(get_full_flags(ea)) or get_item_end(ea) != 2:
             del_items(ea, 2, DELIT_SIMPLE)
             create_word(ea)
-        if is_off0(get_full_flags(ea)) and GetFixupTgtType(ea) == -1:
+        if is_off0(get_full_flags(ea)) and get_fixup_target_type(ea) == -1:
             # remove the offset
             OpHex(ea, 0)
     
@@ -110,7 +117,7 @@ def ForceDword(ea):
         if not is_dword(get_full_flags(ea)) or get_item_end(ea) != 4:
             del_items(ea, 4, DELIT_SIMPLE)
             create_dword(ea)
-        if is_off0(get_full_flags(ea)) and GetFixupTgtType(ea) == -1:
+        if is_off0(get_full_flags(ea)) and get_fixup_target_type(ea) == -1:
             # remove the offset
             OpHex(ea, 0)
 
@@ -119,7 +126,7 @@ def ForceQword(ea):
         if not is_qword(get_full_flags(ea)) or get_item_end(ea) != 8:
             del_items(ea, 8, DELIT_SIMPLE)
             create_qword(ea)
-        if is_off0(get_full_flags(ea)) and GetFixupTgtType(ea) == -1:
+        if is_off0(get_full_flags(ea)) and get_fixup_target_type(ea) == -1:
             # remove the offset
             OpHex(ea, 0)
 
@@ -128,7 +135,7 @@ def ForcePtr(ea, delta = 0):
         ForceQword(ea)
     else:
         ForceDword(ea)
-    if GetFixupTgtType(ea) != -1 and is_off0(get_full_flags(ea)):
+    if get_fixup_target_type(ea) != -1 and is_off0(get_full_flags(ea)):
         # don't touch fixups
         return
     pv = ptrval(ea)
@@ -152,6 +159,7 @@ def make_reloff(ea, base, subtract = False):
         idaapi.op_offset_ex(ea, 0, ri)
 
 def make_rel32():
+    ForceDword(currentEa) # for some reason this likes to sometimes become a dq randomly... ok
     del_items(currentEa, 4, DELIT_SIMPLE)
     ri = idaapi.refinfo_t()
     ri.target = IMAGEBASE + get_wide_dword(currentEa)
@@ -178,18 +186,119 @@ def format_dword(ea, cmt = None):
     return get_wide_dword(ea), ea + 4
 
 def format_bbt():
-    global currentEa
-    bbtEa = currentEa
-    bbt = read_cxx4()
-    set_cmt(bbtEa, "BBT Value = {X:}".format(bbt), False)
+    read_cxx4("BBT Value")
 
 def format_unwindmap():
     global currentEa
-    startEa = currentEa
-    unwindCount = read_cxx4()
-    print("Unwind Count {:X} = {:X} -> {:X}".format(startEa, unwindCount, currentEa))
+    unwindCount = read_cxx4("Unwind Count")
 
-def format_cxx4_data():
+    for i in range(unwindCount):
+        unwindInfoEa = currentEa
+        nextOffsetAndType = read_cxx4()
+        unwindType = nextOffsetAndType & 0b11
+        unwindNextOffset = nextOffsetAndType >> 2
+        unwindTypeStrings = ["NoUW", "DtorWithObj", "DtorWithPtrToObj", "RVA"]
+        set_cmt(unwindInfoEa, "Next Offset = {:X} [Type: {}]".format(unwindNextOffset, unwindTypeStrings[unwindType]), False)
+
+        if unwindType in [CXX4Unwind_DtorWithObj, CXX4Unwind_DtorWithPtrToObj]:
+            format_dword(currentEa, "action")
+            read_dword()
+            read_cxx4("object")
+            set_cmt(unwindObjectEa, "object = {:X}".format(unwindObject), False)
+        elif unwindType == CXX4Unwind_RVA:
+            format_dword(currentEa, "action")
+            read_dword()
+
+def format_handlerarray(beginAddress):
+    global currentEa
+    handlerCount = read_cxx4("Handler Count")
+
+    for i in range(handlerCount):
+        headerEa = currentEa
+        header = read_byte()
+        adjectives = get_bit_num(header, 0, 1)
+        HasType = get_bit_num(header, 1, 1)
+        HasCatchObj = get_bit_num(header, 2, 1)
+        contIsRVA = get_bit_num(header, 3, 1)
+        contAddr = get_bit_num(header, 4, 2)
+
+        contTypeStrings = ["NONE", "ONE", "TWO", "RESERVED"]
+        set_cmt(headerEa, "adjectives {}, dispType {}, dispCatchObj {}, contIsRVA {}, contAddr {}".format(adjectives, HasType, HasCatchObj, contIsRVA, contTypeStrings[contAddr]), False)
+
+        if adjectives == 1:
+            read_cxx4("adjectives")
+        
+        if HasType == 1:
+            set_cmt(currentEa, "dispType", False)
+            make_rel32()
+            dispType = IMAGEBASE + read_dword()
+
+        if HasCatchObj == 1:
+            read_cxx4("dispCatchObj")
+
+        set_cmt(currentEa, "dispOfHandler", False)
+        make_rel32()
+        read_dword()
+
+        if contIsRVA:
+            if contAddr == 1:
+                set_cmt(currentEa, "continuationAddress[0]", False)
+                make_rel32()
+            elif contAddr == 2:
+                set_cmt(currentEa, "continuationAddress[0]", False)
+                make_rel32()
+                read_dword()
+                set_cmt(currentEa, "continuationAddress[1]", False)
+                make_rel32()
+        else:
+            if contAddr == 1:
+                contAddrEa = currentEa
+                contAddr1 = read_cxx4()
+                set_cmt(contAddrEa, "continuationAddress[0] = {:X}".format(IMAGEBASE + beginAddress + contAddr1), False)
+            elif contAddr == 2:
+                contAddrEa = currentEa
+                contAddr1 = read_cxx4()
+                set_cmt(contAddrEa, "continuationAddress[0] = {:X}".format(IMAGEBASE + beginAddress + contAddr1), False)
+                contAddrEa = currentEa
+                contAddr2 = read_cxx4()
+                set_cmt(contAddrEa, "continuationAddress[1] = {:X}".format(IMAGEBASE + beginAddress + contAddr2), False)
+
+def format_tryblockmap(beginAddress):
+    global currentEa
+    tryBlockCount = read_cxx4("TryBlock Count")
+
+    handlers = []
+
+    for i in range(tryBlockCount):
+        tryLow = read_cxx4("tryLow")
+        tryHigh = read_cxx4("tryHigh")
+        catchHigh = read_cxx4("catchHigh")
+
+        set_cmt(currentEa, "dispHandlerArray", False)
+        make_rel32()
+        dispHandlerArray = IMAGEBASE + read_dword()
+        handlers.append(dispHandlerArray)
+
+    for handler in handlers:
+        currentEa = handler
+        format_handlerarray(beginAddress)
+
+
+def format_iptostatemap(beginAddress):
+    global currentEa
+    startEa = currentEa
+    iptoStateMapCount = read_cxx4("IPtoStateMap Count")
+
+    prevIp = 0
+
+    for i in range(iptoStateMapCount):
+        deltaEa = currentEa
+        delta = read_cxx4()
+        set_cmt(deltaEa, "delta = {:X}, addr = {:X}".format(delta, IMAGEBASE + beginAddress + prevIp + delta), False)
+        read_cxx4("state")
+        prevIp += delta
+
+def format_cxx4_data(beginAddress):
     global currentEa
     print("CXX4 data = {:X}".format(currentEa))
     #set_name(currentEa, "", 0)
@@ -232,7 +341,15 @@ def format_cxx4_data():
         currentEa = dispUnwindMap
         format_unwindmap()
 
-def format_unwind_data():
+    if dispTryBlockMap != None:
+        currentEa = dispTryBlockMap
+        format_tryblockmap(beginAddress)
+
+    if dispIPtoStateMap != None:
+        currentEa = dispIPtoStateMap
+        format_iptostatemap(beginAddress)
+
+def format_unwind_data(beginAddress):
     global currentEa
     # print("unwind data = {:X}".format(currentEa))
     versionFlags = read_byte()
@@ -254,7 +371,7 @@ def format_unwind_data():
         handlerName = get_func_name(handlerRva)
         if handlerName in ["__CxxFrameHandler4", "__GSHandlerCheck_EH4"]:
             print("HandlerName at {:X} {:X} = {}".format(handlerRvaEa, handlerRva, handlerName))
-            format_cxx4_data()
+            format_cxx4_data(beginAddress)
 
 def is_valid_unwind(beginAddress, endAddress, unwindAddress):
     if beginAddress == 0 and endAddress == 0 and unwindAddress == 0:
@@ -274,7 +391,7 @@ def format_runtime_fn():
     resumeEa = currentEa
     if is_valid_unwind(beginAddress, endAddress, unwindAddress) == True:
         currentEa = IMAGEBASE + unwindAddress
-        format_unwind_data()
+        format_unwind_data(beginAddress)
 
     currentEa = resumeEa
 
