@@ -99,7 +99,6 @@ def read_cxx4(name = None):
     make_array(currentEa, length)
     if name != None:
         set_cmt(currentEa, "{} = {:X}".format(name, result), False)
-        print("{:X} {} = {:X}".format(currentEa, name, result))
     currentEa += length
     return result
 
@@ -300,8 +299,6 @@ def format_iptostatemap(beginAddress):
 
 def format_cxx4_data(beginAddress):
     global currentEa
-    print("CXX4 data = {:X}".format(currentEa))
-    #set_name(currentEa, "", 0)
     currentEa = IMAGEBASE + read_dword()
     headerEa = currentEa
     header = read_byte()
@@ -351,7 +348,6 @@ def format_cxx4_data(beginAddress):
 
 def format_unwind_data(beginAddress):
     global currentEa
-    # print("unwind data = {:X}".format(currentEa))
     versionFlags = read_byte()
     sizeOfProlog = read_byte()
     countOfCodes = read_byte()
@@ -370,7 +366,6 @@ def format_unwind_data(beginAddress):
         handlerRva = IMAGEBASE + read_dword()
         handlerName = get_func_name(handlerRva)
         if handlerName in ["__CxxFrameHandler4", "__GSHandlerCheck_EH4"]:
-            print("HandlerName at {:X} {:X} = {}".format(handlerRvaEa, handlerRva, handlerName))
             format_cxx4_data(beginAddress)
 
 def is_valid_unwind(beginAddress, endAddress, unwindAddress):
@@ -384,7 +379,6 @@ def is_valid_unwind(beginAddress, endAddress, unwindAddress):
 
 def format_runtime_fn():
     global currentEa
-    # print("RUNTIME_FN = {:X}".format(currentEa))
     beginAddress = read_dword()
     endAddress = read_dword()
     unwindAddress = read_dword()
@@ -403,7 +397,6 @@ while s != BADADDR:
 
 if s != BADADDR:
     currentEa = get_segm_start(s)
-    print("SEG {:X}".format(currentEa))
     endea = get_segm_end(s)
     while currentEa != BADADDR and currentEa < endea:
         format_runtime_fn()
