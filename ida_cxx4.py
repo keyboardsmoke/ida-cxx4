@@ -202,7 +202,8 @@ def format_unwindmap():
         if unwindType in [CXX4Unwind_DtorWithObj, CXX4Unwind_DtorWithPtrToObj]:
             format_dword(currentEa, "action")
             read_dword()
-            read_cxx4("object")
+            unwindObjectEa = currentEa
+            unwindObject = read_cxx4("object")
             set_cmt(unwindObjectEa, "object = {:X}".format(unwindObject), False)
         elif unwindType == CXX4Unwind_RVA:
             format_dword(currentEa, "action")
@@ -389,16 +390,53 @@ def format_runtime_fn():
 
     currentEa = resumeEa
 
-s = get_first_seg()
-while s != BADADDR:
-    if get_segm_name(s) in [".pdata"]:
-        break
-    s = get_next_seg(s)
+def get_seg_dims(name):
+    s = get_first_seg()
+    while s != BADADDR:
+        print("SEGMENT [{}]".format(get_segm_name(s)))
 
-if s != BADADDR:
-    currentEa = get_segm_start(s)
-    endea = get_segm_end(s)
-    while currentEa != BADADDR and currentEa < endea:
+        if get_segm_name(s) in [name]:
+            break
+        s = get_next_seg(s)
+
+    return s, get_segm_end(s)
+
+def get_runtime_functions():
+    ps, pe = get_seg_dims(".pdata")
+    if ps == BADADDR:
+        s = get_name_ea(BADADDR, "ExceptionDir")
+        
+        if s == BADADDR:
+            return BADADDR, BADADDR
+
+        # This solution sucks because when it runs into another struct_ etc.
+        # Which can happen, it stops short. Only way to fix atm is to undefine/un-name
+        # Any entries between ExceptionDir and the true end. I'm pretty sure
+        # There's a way to get directory entries automagically but my 
+        # IDA docs search came up empty
+        initialSize = get_item_size(s)
+        ssize = initialSize
+        while True:
+            varName = get_name(s + ssize)
+            if varName == '' or varName.startswith('stru_'):
+                ssize += initialSize
+            else:
+                break
+
+        print("ExceptionDir {}, {}".format(s, ssize))
+
+        return s, s + ssize
+    else:
+        return ps, pe
+
+start, end = get_runtime_functions()
+
+if start != BADADDR and end != BADADDR:
+    currentEa = start
+    while currentEa != BADADDR and currentEa < end:
         format_runtime_fn()
+else:
+    print("Failed to locate exception directory")
+    exit()
 
 print("CXX4 analysis finished")
